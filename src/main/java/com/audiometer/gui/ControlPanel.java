@@ -3,6 +3,7 @@ package com.audiometer.gui;
 import com.audiometer.model.TestSession;
 import com.audiometer.model.ThresholdPoint;
 import com.audiometer.serial.SerialManager;
+import com.audiometer.functional.AudiometryRules;
 
 import javax.swing.*;
 import java.awt.*;
@@ -189,8 +190,20 @@ public class ControlPanel extends JPanel {
 
         int freq = STANDARD_FREQUENCIES[comboFrequency.getSelectedIndex()];
         int db = sliderIntensity.getValue();
+        
+        if (!AudiometryRules.isValidFrequency(freq)) {
+            setStatus("Invalid frequency!", new Color(239, 68, 68));
+            return;
+        }
+
+        if (!AudiometryRules.isValidIntensity(db)) {
+            setStatus("Invalid intensity!", new Color(239, 68, 68));
+            return;
+        }
 
         boolean sent = serialManager.sendToneCommand(freq, db);
+        
+        
         if (sent) {
             setStatus(String.format("Tone: %d Hz @ %d dB sent", freq, db), new Color(22, 163, 74));
             session.setTestRunning(true);
