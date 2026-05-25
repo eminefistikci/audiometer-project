@@ -1,0 +1,23 @@
+# Compiled class file
+*.class
+
+# Log files
+*.log
+
+# Package Files
+*.jar
+*.war
+*.zip
+*.tar.gz
+
+# Maven build outputs
+target/
+
+# IDE files (Eclipse, IntelliJ, VS Code)
+.settings/
+.project
+.classpath
+.idea/
+*.iml
+.vscode/
+bin/
