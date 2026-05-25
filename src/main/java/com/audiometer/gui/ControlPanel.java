@@ -4,6 +4,8 @@ import com.audiometer.model.TestSession;
 import com.audiometer.model.ThresholdPoint;
 import com.audiometer.serial.SerialManager;
 import com.audiometer.functional.AudiometryRules;
+import com.audiometer.algorithm.HughsonWestlakeEngine;
+import com.audiometer.algorithm.HughsonWestlakeStep;
 
 import javax.swing.*;
 import java.awt.*;
@@ -25,6 +27,7 @@ public class ControlPanel extends JPanel {
     private final JButton btnSendTone;
     private final JButton btnStop;
     private final JButton btnSaveThreshold;
+    private final JButton btnAutoTest;
     private final JLabel labelStatus;
 
     private final TestSession session;
@@ -33,6 +36,12 @@ public class ControlPanel extends JPanel {
     private int lastResponseFrequency = -1;
     private int lastResponseIntensity = -1;
     private ThresholdPoint.Ear lastResponseEar = null;
+    private Timer autoTestTimer;
+    private boolean autoTestRunning = false;
+    private int autoTestFrequency = 1000;
+    private int autoTestIntensity = 40;
+    private ThresholdPoint.Ear autoTestEar = ThresholdPoint.Ear.RIGHT;
+    private boolean autoPatientResponded = false;
 
     public ControlPanel(TestSession session, SerialManager serialManager) {
         this.session = session;
@@ -139,22 +148,28 @@ public class ControlPanel extends JPanel {
         btnStop = new ModernButton("Stop Tone", new Color(239, 68, 68), Color.WHITE, 8);
         btnSaveThreshold = new ModernButton("Save Threshold", new Color(59, 130, 246), Color.WHITE, 8);
         btnSaveThreshold.setEnabled(false);
+        btnAutoTest = new ModernButton("Auto Threshold Test", new Color(168, 85, 247), Color.WHITE, 8);
 
         Dimension btnSize = new Dimension(220, 35);
         btnSendTone.setMaximumSize(btnSize);
         btnStop.setMaximumSize(btnSize);
         btnSaveThreshold.setMaximumSize(btnSize);
+        btnAutoTest.setMaximumSize(btnSize);
         btnSendTone.setPreferredSize(btnSize);
         btnStop.setPreferredSize(btnSize);
         btnSaveThreshold.setPreferredSize(btnSize);
+        btnAutoTest.setPreferredSize(btnSize);
+
 
         btnSendTone.addActionListener(this::onSendTone);
         btnStop.addActionListener(this::onStop);
         btnSaveThreshold.addActionListener(this::onSaveThreshold);
+        btnAutoTest.addActionListener(this::onAutoTest);
 
         btnSendTone.setAlignmentX(Component.CENTER_ALIGNMENT);
         btnStop.setAlignmentX(Component.CENTER_ALIGNMENT);
         btnSaveThreshold.setAlignmentX(Component.CENTER_ALIGNMENT);
+        btnAutoTest.setAlignmentX(Component.CENTER_ALIGNMENT);
 
         btnPanel.setLayout(new BoxLayout(btnPanel, BoxLayout.Y_AXIS));
         btnPanel.add(btnSendTone);
@@ -162,6 +177,8 @@ public class ControlPanel extends JPanel {
         btnPanel.add(btnStop);
         btnPanel.add(Box.createVerticalStrut(4));
         btnPanel.add(btnSaveThreshold);
+        btnPanel.add(Box.createVerticalStrut(4));
+        btnPanel.add(btnAutoTest);
 
         labelStatus = new JLabel("System Ready", SwingConstants.CENTER);
         labelStatus.setFont(new Font("Segoe UI", Font.BOLD | Font.ITALIC, 11));
@@ -190,7 +207,7 @@ public class ControlPanel extends JPanel {
 
         int freq = STANDARD_FREQUENCIES[comboFrequency.getSelectedIndex()];
         int db = sliderIntensity.getValue();
-        
+
         if (!AudiometryRules.isValidFrequency(freq)) {
             setStatus("Invalid frequency!", new Color(239, 68, 68));
             return;
@@ -223,6 +240,9 @@ public class ControlPanel extends JPanel {
     }
 
     public void onResponseReceived() {
+        if (autoTestRunning) {
+            autoPatientResponded = true;
+        }
         lastResponseFrequency = STANDARD_FREQUENCIES[comboFrequency.getSelectedIndex()];
         lastResponseIntensity = sliderIntensity.getValue();
         lastResponseEar = radioRight.isSelected() ? ThresholdPoint.Ear.RIGHT : ThresholdPoint.Ear.LEFT;
@@ -249,6 +269,84 @@ public class ControlPanel extends JPanel {
         lastResponseIntensity = -1;
         lastResponseEar = null;
     }
+
+    private void onAutoTest(ActionEvent e) {
+    if (autoTestRunning) {
+        stopAutoTest();
+    } else {
+        startAutoTest();
+    }
+}
+
+private void startAutoTest() {
+    if (!serialManager.isConnected()) {
+        setStatus("⚠ Port not connected!", new Color(239, 68, 68));
+        return;
+    }
+
+    autoTestRunning = true;
+    autoPatientResponded = false;
+
+    autoTestFrequency = STANDARD_FREQUENCIES[comboFrequency.getSelectedIndex()];
+    autoTestIntensity = sliderIntensity.getValue();
+    autoTestEar = radioRight.isSelected() ? ThresholdPoint.Ear.RIGHT : ThresholdPoint.Ear.LEFT;
+
+    btnAutoTest.setText("Stop Auto Test");
+    btnSendTone.setEnabled(false);
+    btnSaveThreshold.setEnabled(false);
+
+    setStatus("Auto test started...", new Color(168, 85, 247));
+
+    autoTestTimer = new Timer(2500, event -> runAutoTestStep());
+    autoTestTimer.setInitialDelay(0);
+    autoTestTimer.start();
+}
+
+private void runAutoTestStep() {
+    if (!autoTestRunning) {
+        return;
+    }
+
+    sliderIntensity.setValue(autoTestIntensity);
+    session.setCurrentFrequencyHz(autoTestFrequency);
+    session.setCurrentIntensityDb(autoTestIntensity);
+    session.setCurrentEar(autoTestEar);
+
+    boolean sent = serialManager.sendToneCommand(autoTestFrequency, autoTestIntensity);
+
+    if (!sent) {
+        stopAutoTest();
+        setStatus("Auto test command failed!", new Color(239, 68, 68));
+        return;
+    }
+
+    setStatus(String.format("Auto: %d Hz @ %d dB", autoTestFrequency, autoTestIntensity),
+            new Color(168, 85, 247));
+
+    HughsonWestlakeStep current =
+            new HughsonWestlakeStep(autoTestFrequency, autoTestIntensity, autoPatientResponded);
+
+    HughsonWestlakeStep next =
+            HughsonWestlakeEngine.nextStep(current);
+
+    autoTestIntensity = next.getIntensity();
+    autoPatientResponded = false;
+}
+
+private void stopAutoTest() {
+    autoTestRunning = false;
+
+    if (autoTestTimer != null) {
+        autoTestTimer.stop();
+    }
+
+    serialManager.sendStopCommand();
+
+    btnAutoTest.setText("Auto Threshold Test");
+    btnSendTone.setEnabled(true);
+
+    setStatus("Auto test stopped.", new Color(100, 116, 139));
+}
 
     private void adjustIntensity(int delta) {
         int newVal = Math.max(DB_MIN, Math.min(DB_MAX, sliderIntensity.getValue() + delta));
