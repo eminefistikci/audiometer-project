@@ -6,6 +6,9 @@ import com.audiometer.serial.SerialManager;
 import com.audiometer.functional.AudiometryRules;
 import com.audiometer.algorithm.HughsonWestlakeEngine;
 import com.audiometer.algorithm.HughsonWestlakeStep;
+import com.audiometer.algorithm.ThresholdDetector;
+import com.audiometer.algorithm.ThresholdEvaluation;
+import com.audiometer.algorithm.FrequencyCycle;
 
 import javax.swing.*;
 import java.awt.*;
@@ -38,8 +41,7 @@ public class ControlPanel extends JPanel {
     private ThresholdPoint.Ear lastResponseEar = null;
     private Timer autoTestTimer;
     private boolean autoTestRunning = false;
-    private int autoTestFrequency = 1000;
-    private int autoTestIntensity = 40;
+    private ThresholdEvaluation currentEvaluation;
     private ThresholdPoint.Ear autoTestEar = ThresholdPoint.Ear.RIGHT;
     private boolean autoPatientResponded = false;
 
@@ -287,9 +289,15 @@ private void startAutoTest() {
     autoTestRunning = true;
     autoPatientResponded = false;
 
-    autoTestFrequency = STANDARD_FREQUENCIES[comboFrequency.getSelectedIndex()];
-    autoTestIntensity = sliderIntensity.getValue();
-    autoTestEar = radioRight.isSelected() ? ThresholdPoint.Ear.RIGHT : ThresholdPoint.Ear.LEFT;
+    int startingFrequency = 1000;
+
+    currentEvaluation =
+        ThresholdEvaluation.initial(startingFrequency);
+
+    autoTestEar =
+        radioRight.isSelected()
+                ? ThresholdPoint.Ear.RIGHT
+                : ThresholdPoint.Ear.LEFT;
 
     btnAutoTest.setText("Stop Auto Test");
     btnSendTone.setEnabled(false);
@@ -307,12 +315,17 @@ private void runAutoTestStep() {
         return;
     }
 
-    sliderIntensity.setValue(autoTestIntensity);
-    session.setCurrentFrequencyHz(autoTestFrequency);
-    session.setCurrentIntensityDb(autoTestIntensity);
+    sliderIntensity.setValue(currentEvaluation.getIntensity());
+
+    session.setCurrentFrequencyHz(currentEvaluation.getFrequency());
+    session.setCurrentIntensityDb(currentEvaluation.getIntensity());
     session.setCurrentEar(autoTestEar);
 
-    boolean sent = serialManager.sendToneCommand(autoTestFrequency, autoTestIntensity);
+    boolean sent =
+        serialManager.sendToneCommand(
+                currentEvaluation.getFrequency(),
+                currentEvaluation.getIntensity()
+        );
 
     if (!sent) {
         stopAutoTest();
@@ -320,16 +333,52 @@ private void runAutoTestStep() {
         return;
     }
 
-    setStatus(String.format("Auto: %d Hz @ %d dB", autoTestFrequency, autoTestIntensity),
-            new Color(168, 85, 247));
+    setStatus(
+        String.format(
+                "Auto: %d Hz @ %d dB",
+                currentEvaluation.getFrequency(),
+                currentEvaluation.getIntensity()
+        ),
+        new Color(168, 85, 247)
+);
 
-    HughsonWestlakeStep current =
-            new HughsonWestlakeStep(autoTestFrequency, autoTestIntensity, autoPatientResponded);
+currentEvaluation =
+        ThresholdDetector.next(
+                currentEvaluation,
+                autoPatientResponded
+        );
 
-    HughsonWestlakeStep next =
-            HughsonWestlakeEngine.nextStep(current);
+if (currentEvaluation.isThresholdFound()) {
 
-    autoTestIntensity = next.getIntensity();
+    ThresholdPoint point =
+            new ThresholdPoint(
+                    currentEvaluation.getFrequency(),
+                    currentEvaluation.getThresholdDb(),
+                    autoTestEar
+            );
+
+    session.addThreshold(point);
+
+    int nextFrequency =
+            FrequencyCycle.nextFrequency(
+                    currentEvaluation.getFrequency()
+            );
+
+    if (nextFrequency == -1) {
+        stopAutoTest();
+
+        setStatus(
+                "Automatic audiometry completed.",
+                new Color(22, 163, 74)
+        );
+
+        return;
+    }
+
+    currentEvaluation =
+            ThresholdEvaluation.initial(nextFrequency);
+}
+
     autoPatientResponded = false;
 }
 
